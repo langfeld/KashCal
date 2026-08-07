@@ -462,34 +462,6 @@ private fun DayCell(
     val resources = LocalContext.current.resources
     val accessibilityDesc = buildAccessibilityDescription(resources, dayCode, if (isAdjacentMonth) 0 else events.size)
 
-    // Adjacent-month cells: faded day number, tappable, no dots or today highlight
-    if (isAdjacentMonth) {
-        Box(
-            modifier = modifier
-                .fillMaxHeight()
-                .clickable(
-                    actionStartActivity<MainActivity>(
-                        parameters = actionParametersOf(
-                            ActionParameters.Key<String>(EXTRA_ACTION) to ACTION_GO_TO_DATE,
-                            ActionParameters.Key<Int>(EXTRA_DAY_CODE) to dayCode
-                        )
-                    )
-                )
-                .semantics { contentDescription = accessibilityDesc },
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Text(
-                text = "${cell.dayOfMonth}",
-                style = TextStyle(
-                    color = WidgetTheme.adjacentMonthText(forcedDark),
-                    fontSize = WidgetTypography.monthDayNumber
-                )
-            )
-        }
-        return
-    }
-
-    val dotColors = extractDotColors(events)
     // Titles mode with zero fitting rows degrades to dots rather than clipping a title row
     // off the cell bottom; dots always fit a cell that fits the day number.
     val renderTitles = showEventTitles && maxEventRows > 0 && maxTitleChars > 0
@@ -514,47 +486,56 @@ private fun DayCell(
         contentAlignment = Alignment.TopCenter
     ) {
         Column(
-            modifier = GlanceModifier.fillMaxWidth(),
-            horizontalAlignment = if (renderTitles) Alignment.Start else Alignment.CenterHorizontally
+            modifier = GlanceModifier.fillMaxWidth()
         ) {
-            // Day number. Today is marked with a solid accent circle around the
-            // number (the number flips to the on-accent color) — the Material /
-            // Google Calendar "today" treatment; other days show a bare number.
+            // Day number, always centered — the event rows below may be left-aligned, but
+            // the number keeps its grid position in both modes. Today is marked with a
+            // solid accent circle around the number (the number flips to the on-accent
+            // color) — the Material / Google Calendar "today" treatment.
             val textColor = when {
+                isAdjacentMonth -> WidgetTheme.adjacentMonthText(forcedDark)
                 isToday -> WidgetTheme.onTodayMarker
                 isPast -> WidgetTheme.pastEventText
                 else -> WidgetTheme.primaryText
             }
             Box(
-                modifier = if (isToday) {
-                    GlanceModifier
-                        .cornerRadius(TODAY_MARKER_CORNER_RADIUS_DP.dp)
-                        .background(WidgetTheme.todayMarkerBackground)
-                        .padding(
-                            horizontal = TODAY_MARKER_HORIZONTAL_PADDING_DP.dp,
-                            vertical = TODAY_MARKER_VERTICAL_PADDING_DP.dp
-                        )
-                } else {
-                    GlanceModifier
-                },
+                modifier = GlanceModifier.fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "${cell.dayOfMonth}",
-                    style = TextStyle(
-                        color = textColor,
-                        fontSize = WidgetTypography.monthDayNumber,
-                        // Medium (vs Normal) gives the numbers more presence against
-                        // the dynamic Material You surface, which renders softer than
-                        // a fixed high-contrast palette. Today stays Bold.
-                        fontWeight = if (isToday) FontWeight.Bold else FontWeight.Medium
+                Box(
+                    modifier = if (isToday && !isAdjacentMonth) {
+                        GlanceModifier
+                            .cornerRadius(TODAY_MARKER_CORNER_RADIUS_DP.dp)
+                            .background(WidgetTheme.todayMarkerBackground)
+                            .padding(
+                                horizontal = TODAY_MARKER_HORIZONTAL_PADDING_DP.dp,
+                                vertical = TODAY_MARKER_VERTICAL_PADDING_DP.dp
+                            )
+                    } else {
+                        GlanceModifier
+                    },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "${cell.dayOfMonth}",
+                        style = TextStyle(
+                            color = textColor,
+                            fontSize = WidgetTypography.monthDayNumber,
+                            // Medium (vs Normal) gives the numbers more presence against
+                            // the dynamic Material You surface, which renders softer than
+                            // a fixed high-contrast palette. Today stays Bold.
+                            fontWeight = if (isToday && !isAdjacentMonth) FontWeight.Bold else FontWeight.Medium
+                        )
                     )
-                )
+                }
             }
 
-            if (renderTitles) {
+            // Adjacent-month cells show no event content in either mode (dots mode has
+            // always kept them bare; titles mode does the same) — a bare faded number
+            // reads cleaner at the grid edge.
+            if (!isAdjacentMonth && renderTitles) {
                 // Event title rows, mirroring the in-app month view's snippet styles.
-                titleEvents.forEachIndexed { index, event ->
+                titleEvents.forEach { event ->
                     Spacer(modifier = GlanceModifier.height(EVENT_ROW_GAP_DP.dp))
                     EventTitleRow(event, maxTitleChars)
                 }
@@ -570,10 +551,13 @@ private fun DayCell(
                         modifier = GlanceModifier.padding(start = 3.dp)
                     )
                 }
-            } else if (dotColors.isNotEmpty()) {
+            } else if (!isAdjacentMonth && !renderTitles && dotColors.isNotEmpty()) {
                 // Event indicator dots (up to 3)
                 Spacer(modifier = GlanceModifier.height(1.dp))
-                Row(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = GlanceModifier.fillMaxWidth()
+                ) {
                     dotColors.forEachIndexed { index, color ->
                         if (index > 0) {
                             Spacer(modifier = GlanceModifier.width(2.dp))
