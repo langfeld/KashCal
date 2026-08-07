@@ -38,7 +38,8 @@ class WidgetDataRepository @Inject constructor(
         val isPast: Boolean,
         val isDeviceEvent: Boolean,
         val startDay: Int,
-        val isCancelled: Boolean = false
+        val isCancelled: Boolean = false,
+        val isFree: Boolean = false
     )
 
     /**
@@ -131,7 +132,8 @@ class WidgetDataRepository @Inject constructor(
             isPast = DateTimeUtils.isEventPast(displayEvent.endTs, displayEvent.endDay, displayEvent.isAllDay),
             isDeviceEvent = displayEvent is DisplayEvent.Device,
             startDay = displayEvent.startDay,
-            isCancelled = displayEvent.isCancelled
+            isCancelled = displayEvent.isCancelled,
+            isFree = displayEvent.isFree
         )
     }
 
