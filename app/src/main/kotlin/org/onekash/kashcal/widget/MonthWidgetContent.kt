@@ -462,6 +462,7 @@ private fun DayCell(
     val resources = LocalContext.current.resources
     val accessibilityDesc = buildAccessibilityDescription(resources, dayCode, if (isAdjacentMonth) 0 else events.size)
 
+    val dotColors = extractDotColors(events)
     // Titles mode with zero fitting rows degrades to dots rather than clipping a title row
     // off the cell bottom; dots always fit a cell that fits the day number.
     val renderTitles = showEventTitles && maxEventRows > 0 && maxTitleChars > 0
