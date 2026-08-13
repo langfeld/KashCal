@@ -36,6 +36,7 @@ import org.onekash.kashcal.sync.parser.icaldav.EventToICalEventMapper
 import org.onekash.kashcal.sync.parser.icaldav.ICalEventMapper
 import org.onekash.kashcal.sync.quirks.CalDavQuirks
 import org.onekash.kashcal.sync.session.SyncSessionBuilder
+import org.onekash.kashcal.sync.util.CaldavUrlNormalizer
 import org.onekash.kashcal.sync.strategy.PullStrategy.Companion.MULTIGET_BATCH_SIZE
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -383,6 +384,37 @@ class PullStrategy @Inject constructor(
     }
 
     /**
+     * Build a resolver that maps a server-reported resource URL to the local
+     * event whose stored caldav_url matches it, tolerating percent-encoding
+     * differences. Some servers (e.g. Radicale) echo a resource href with
+     * pchar-legal reserved characters percent-encoded (a literal '@' comes back
+     * as %40) while KashCal stored the URL with the literal character. An exact
+     * match is tried first (index-backed and the common case); on a miss the URL
+     * is compared canonically against the calendar's stored URLs.
+     *
+     * Reuse a single resolver across a whole deletion loop: the heavier canonical
+     * candidate map is loaded at most once — on the first exact-match miss — then
+     * reused. This matters on servers that re-encode every href, where every
+     * lookup misses the fast path; a per-lookup reload would be O(deletions x
+     * calendar size). Create it per loop (its cache must not outlive the loop).
+     */
+    private fun caldavUrlResolver(calendarId: Long): suspend (String) -> Event? {
+        var canonicalMap: Map<String, Event>? = null
+        return resolve@{ url ->
+            eventsDao.getByCaldavUrl(url)?.let { return@resolve it }
+            val target = CaldavUrlNormalizer.canonicalize(url) ?: return@resolve null
+            val map = canonicalMap ?: eventsDao.getEventsWithCaldavUrl(calendarId)
+                .mapNotNull { e ->
+                    val u = e.caldavUrl ?: return@mapNotNull null
+                    (CaldavUrlNormalizer.canonicalize(u) ?: u) to e
+                }
+                .toMap()
+                .also { canonicalMap = it }
+            map[target]
+        }
+    }
+
+    /**
      * Incremental sync using sync-collection REPORT.
      * Only fetches changed/deleted items since last sync.
      */
@@ -426,9 +458,14 @@ class PullStrategy @Inject constructor(
         // Handle deletions (respecting pending local changes)
         var deleted = 0
         val deletedChanges = mutableListOf<SyncChange>()
-        for (href in syncReport.deleted) {
+        val resolveLocalEvent = caldavUrlResolver(calendar.id)
+        // Dedupe like the changed-href list below: a server may report the same
+        // deleted href more than once (iCloud is known to). The resolver caches a
+        // per-loop candidate map, so a repeated href would otherwise resolve the
+        // just-deleted row again and double-count the deletion + notification.
+        for (href in syncReport.deleted.distinct()) {
             val url = quirks.buildEventUrl(href, calendar.caldavUrl)
-            val event = eventsDao.getByCaldavUrl(url)
+            val event = resolveLocalEvent(url)
             if (event != null) {
                 // LOCAL-FIRST: Don't delete events with pending local changes
                 // They may have been modified/recreated locally while offline
@@ -453,6 +490,8 @@ class PullStrategy @Inject constructor(
                 ))
                 eventsDao.deleteById(event.id)
                 deleted++
+            } else {
+                Log.d(TAG, "Deletion href matched no local event: $url")
             }
         }
 
@@ -638,33 +677,30 @@ class PullStrategy @Inject constructor(
         // The next incremental sync will handle reconciliation properly.
         var deleted = 0
         val deletedChanges = mutableListOf<SyncChange>()
+        // Membership is compared on a CANONICAL form of the URL so a resource the
+        // server echoes with different (but equivalent) percent-encoding — e.g.
+        // Radicale re-encoding a literal '@' in the filename as '%40' — is not
+        // mistaken for a server-side deletion and destroyed locally (issue #333).
+        val serverUrls = serverEtags.mapTo(HashSet(serverEtags.size)) { (href, _) ->
+            val url = quirks.buildEventUrl(href, calendar.caldavUrl)
+            CaldavUrlNormalizer.canonicalize(url) ?: url
+        }
+        fun Event.isStaleOnServer(): Boolean =
+            caldavUrl != null &&
+            (CaldavUrlNormalizer.canonicalize(caldavUrl) ?: caldavUrl) !in serverUrls &&
+            !hasPendingChanges() &&
+            id !in recentlyPushedEventIds
         if (forceFullSync) {
-            // Build server URL set to log how many events *would have been* deleted
-            val serverUrls = serverEtags.map { (href, _) ->
-                quirks.buildEventUrl(href, calendar.caldavUrl)
-            }.toSet()
+            // Count how many events *would have been* deleted (skipped to avoid data loss).
             val localEvents = eventsDao.getByCalendarIdInRange(calendar.id, startMs, endMs)
-            val wouldDelete = localEvents.count { event ->
-                event.caldavUrl != null &&
-                event.caldavUrl !in serverUrls &&
-                !event.hasPendingChanges() &&
-                event.id !in recentlyPushedEventIds
-            }
+            val wouldDelete = localEvents.count { it.isStaleOnServer() }
             if (wouldDelete > 0) {
                 Log.d(TAG, "forceFullSync: skipping deletion of $wouldDelete local events not in server response")
             }
         } else {
             // Normal path: delete stale local events
-            val serverUrls = serverEtags.map { (href, _) ->
-                quirks.buildEventUrl(href, calendar.caldavUrl)
-            }.toSet()
             val localEvents = eventsDao.getByCalendarIdInRange(calendar.id, startMs, endMs)
-            val toDelete = localEvents.filter { event ->
-                event.caldavUrl != null &&
-                event.caldavUrl !in serverUrls &&
-                !event.hasPendingChanges() &&
-                event.id !in recentlyPushedEventIds
-            }
+            val toDelete = localEvents.filter { it.isStaleOnServer() }
             for (event in toDelete) {
                 Log.d(TAG, "Deleting stale event: ${event.caldavUrl}")
                 deletedChanges.add(SyncChange(
@@ -682,16 +718,20 @@ class PullStrategy @Inject constructor(
             }
         }
 
-        // Step 2: Compare etags to skip unchanged events (bandwidth optimization)
+        // Step 2: Compare etags to skip unchanged events (bandwidth optimization).
+        // Keyed on the canonical URL form so an '@'-in-filename event the server
+        // re-encodes as '%40' still matches its local etag and isn't re-downloaded.
         val localEtagEntries = eventsDao.getEtagMapForCalendar(calendar.id, startMs, endMs)
-        val localEtagMap = localEtagEntries.associate { it.caldavUrl to it.etag }
+        val localEtagMap = localEtagEntries.associate {
+            (CaldavUrlNormalizer.canonicalize(it.caldavUrl) ?: it.caldavUrl) to it.etag
+        }
 
         val hrefsToFetch = mutableListOf<String>()
         var skippedCount = 0
 
         for ((href, serverEtag) in serverEtags) {
             val eventUrl = quirks.buildEventUrl(href, calendar.caldavUrl)
-            val localEtag = localEtagMap[eventUrl]
+            val localEtag = localEtagMap[CaldavUrlNormalizer.canonicalize(eventUrl) ?: eventUrl]
             if (localEtag == null || localEtag != serverEtag) {
                 hrefsToFetch.add(href)
             } else {
@@ -809,32 +849,49 @@ class PullStrategy @Inject constructor(
         // Changed: etag differs (including null -> non-null)
         // New: on server but not local
         // Deleted: on local but not server (handled separately)
+        //
+        // Membership is compared on a CANONICAL form of the URL so a resource
+        // the server echoes with different (but equivalent) percent-encoding —
+        // e.g. Radicale re-encoding a literal '@' in the filename as '%40' —
+        // is recognized as the same event rather than being misclassified as
+        // both deleted and new. We only canonicalize for comparison; changed/new
+        // keep the ORIGINAL server URL (so multiget fetches the exact server
+        // path) and deleted keeps the ORIGINAL local URL (for the row lookup).
+        val canonicalLocalEtags = HashMap<String, String?>(localEtagMap.size)
+        for ((url, etag) in localEtagMap) {
+            canonicalLocalEtags[CaldavUrlNormalizer.canonicalize(url) ?: url] = etag
+        }
 
         val changedUrls = mutableListOf<String>()
         val newUrls = mutableListOf<String>()
 
         for ((serverUrl, serverEtag) in serverEtagMap) {
-            val localEtag = localEtagMap[serverUrl]
-            if (localEtag == null) {
+            val canonicalServerUrl = CaldavUrlNormalizer.canonicalize(serverUrl) ?: serverUrl
+            if (!canonicalLocalEtags.containsKey(canonicalServerUrl)) {
                 // New event on server
                 newUrls.add(serverUrl)
-            } else if (localEtag != serverEtag) {
+            } else if (canonicalLocalEtags[canonicalServerUrl] != serverEtag) {
                 // Etag differs - event changed
                 changedUrls.add(serverUrl)
             }
             // else: etag matches, no change needed
         }
 
-        // Find deleted events (on local but not server)
-        val deletedUrls = localEtagMap.keys.filter { it !in serverEtagMap }
+        // Find deleted events (on local but not server), comparing canonically.
+        val canonicalServerKeys = serverEtagMap.keys
+            .mapTo(HashSet(serverEtagMap.size)) { CaldavUrlNormalizer.canonicalize(it) ?: it }
+        val deletedUrls = localEtagMap.keys.filter {
+            (CaldavUrlNormalizer.canonicalize(it) ?: it) !in canonicalServerKeys
+        }
 
         Log.d(TAG, "Etag comparison: changed=${changedUrls.size}, new=${newUrls.size}, deleted=${deletedUrls.size}")
 
         // Step 4: Handle deletions (respecting pending local changes)
         var deleted = 0
         val deletedChanges = mutableListOf<SyncChange>()
+        val resolveLocalEvent = caldavUrlResolver(calendar.id)
         for (url in deletedUrls) {
-            val event = eventsDao.getByCaldavUrl(url)
+            val event = resolveLocalEvent(url)
             if (event != null) {
                 // LOCAL-FIRST: Don't delete events with pending local changes
                 // RFC 4791: Don't delete recently pushed events — server may not
@@ -857,6 +914,8 @@ class PullStrategy @Inject constructor(
                 ))
                 eventsDao.deleteById(event.id)
                 deleted++
+            } else {
+                Log.d(TAG, "Deletion url matched no local event: $url")
             }
         }
 
@@ -953,6 +1012,31 @@ class PullStrategy @Inject constructor(
             if (e is CancellationException) throw e
             Log.w(TAG, "Decline cancel failed for event $eventId: ${e.message}")
         }
+    }
+
+    /**
+     * Record a per-event processing failure and route it through the same
+     * accounting a malformed-ICS parse failure gets. Shared by both processing
+     * passes so a change to the isolation policy can't drift between them.
+     *
+     * Recovery depends on which pull path is running. The incremental path
+     * (pullIncremental) reads getSkippedParseError() and holds the sync token
+     * for a bounded retry (MAX_PARSE_RETRIES) before abandoning, so a transient
+     * failure gets re-fetched. The full-sync and etag-fallback paths do NOT
+     * consult this count: they advance the token/ctag unconditionally, so a
+     * skipped event is re-fetched only when the server next changes it (or on a
+     * forced full sync). Either way the failure is isolated to the one event and
+     * the rest of the batch lands.
+     */
+    private fun recordProcessingFailure(
+        sessionBuilder: SyncSessionBuilder?,
+        caldavUrl: String,
+        label: String,
+        e: Exception,
+    ) {
+        Log.e(TAG, "Skipping $caldavUrl - failed to process $label: ${e.message}", e)
+        sessionBuilder?.incrementSkipParseError()
+        sessionBuilder?.addWarning("Failed to process $label at ${filenameOf(caldavUrl)}: ${e.message}")
     }
 
     /**
@@ -1117,56 +1201,67 @@ class PullStrategy @Inject constructor(
                 continue
             }
 
-            // Map ICalEvent to Event entity + Attendee rows using ICalEventMapper
-            val mapped = ICalEventMapper.toEntity(
-                icalEvent = meta.parsed,
-                rawIcal = meta.rawIcal,
-                calendarId = calendar.id,
-                caldavUrl = meta.caldavUrl,
-                etag = meta.etag
-            )
-            var event = mapped.event
-
-            // Reject events with invalid timestamps (RFC 5545 violation)
-            if (!hasValidTimestamps(event)) {
-                Log.w(TAG, "Skipping ${meta.caldavUrl} - invalid timestamps: startTs=${event.startTs}, endTs=${event.endTs}")
-                sessionBuilder?.incrementSkipParseError()
-                sessionBuilder?.addWarning("Invalid timestamps in ${filenameOf(meta.caldavUrl)} (endTs < startTs)")
-                continue
-            }
-
-            // Preserve existing event ID and timestamps
-            if (existingEvent != null) {
-                event = event.copy(
-                    id = existingEvent.id,
-                    createdAt = existingEvent.createdAt,
-                    localModifiedAt = existingEvent.localModifiedAt,
-                    // Preserve existing etag when server omits <getetag> from response
-                    // (RFC 4791 says SHOULD include etag, but some servers/CDN may omit it)
-                    etag = meta.etag ?: existingEvent.etag,
-                    color = event.color ?: existingEvent.color
+            // Fault isolation spans the whole map->validate->upsert->occurrence
+            // pipeline: the map step (toEntity) and the pre-transaction reads run
+            // before the transaction, and a parseable-but-hostile event can make
+            // any of them throw a shape no fixture anticipated. Isolating only the
+            // transaction would still let a map-step throw abort the whole
+            // calendar's pull and strand every other event in the batch. The
+            // `continue`s inside are ordinary skip paths (invalid ts, race), not
+            // failures.
+            // Triple carries (saved event, prior attendees, new attendees) out of
+            // the isolated block; `mapped.attendees` is needed post-transaction by
+            // the decline-cancel hook but is scoped inside the try.
+            val savedTriple: Triple<Event, List<Attendee>, List<Attendee>> = try {
+                // Map ICalEvent to Event entity + Attendee rows using ICalEventMapper
+                val mapped = ICalEventMapper.toEntity(
+                    icalEvent = meta.parsed,
+                    rawIcal = meta.rawIcal,
+                    calendarId = calendar.id,
+                    caldavUrl = meta.caldavUrl,
+                    etag = meta.etag
                 )
-            }
+                var event = mapped.event
 
-            // RACE PREVENTION: Re-check sync status just before the transaction.
-            // The outer hasPendingChanges() check (line 865) uses a stale in-memory
-            // object. A user edit between that check and this transaction would set
-            // syncStatus to PENDING_UPDATE. Without this re-check, the upsert would
-            // silently overwrite the user's local edit with server data (data loss).
-            if (existingEvent != null) {
-                val freshStatus = eventsDao.getSyncStatus(existingEvent.id)
-                if (freshStatus != null && freshStatus != SyncStatus.SYNCED) {
-                    Log.d(TAG, "Race detected: ${meta.caldavUrl} gained pending changes ($freshStatus) between check and transaction")
-                    sessionBuilder?.incrementSkipPendingLocal()
-                    uidToMasterEvent[meta.parsed.uid] = existingEvent
+                // Reject events with invalid timestamps (RFC 5545 violation)
+                if (!hasValidTimestamps(event)) {
+                    Log.w(TAG, "Skipping ${meta.caldavUrl} - invalid timestamps: startTs=${event.startTs}, endTs=${event.endTs}")
+                    sessionBuilder?.incrementSkipParseError()
+                    sessionBuilder?.addWarning("Invalid timestamps in ${filenameOf(meta.caldavUrl)} (endTs < startTs)")
                     continue
                 }
-            }
 
-            // TRANSACTION: Upsert event and generate occurrences atomically
-            // Prevents orphaned events (no occurrences) if crash occurs mid-operation
-            // Wrapped in withDbRetry for resilience against database lock errors
-            val savedPair: Pair<Event, List<Attendee>> = try {
+                // Preserve existing event ID and timestamps
+                if (existingEvent != null) {
+                    event = event.copy(
+                        id = existingEvent.id,
+                        createdAt = existingEvent.createdAt,
+                        localModifiedAt = existingEvent.localModifiedAt,
+                        // Preserve existing etag when server omits <getetag> from response
+                        // (RFC 4791 says SHOULD include etag, but some servers/CDN may omit it)
+                        etag = meta.etag ?: existingEvent.etag,
+                        color = event.color ?: existingEvent.color
+                    )
+                }
+
+                // RACE PREVENTION: Re-check sync status just before the transaction.
+                // The outer hasPendingChanges() check (line 865) uses a stale in-memory
+                // object. A user edit between that check and this transaction would set
+                // syncStatus to PENDING_UPDATE. Without this re-check, the upsert would
+                // silently overwrite the user's local edit with server data (data loss).
+                if (existingEvent != null) {
+                    val freshStatus = eventsDao.getSyncStatus(existingEvent.id)
+                    if (freshStatus != null && freshStatus != SyncStatus.SYNCED) {
+                        Log.d(TAG, "Race detected: ${meta.caldavUrl} gained pending changes ($freshStatus) between check and transaction")
+                        sessionBuilder?.incrementSkipPendingLocal()
+                        uidToMasterEvent[meta.parsed.uid] = existingEvent
+                        continue
+                    }
+                }
+
+                // TRANSACTION: Upsert event and generate occurrences atomically
+                // Prevents orphaned events (no occurrences) if crash occurs mid-operation
+                // Wrapped in withDbRetry for resilience against database lock errors
                 withDbRetry {
                     database.runInTransaction {
                         val eventId = eventsDao.upsert(event)
@@ -1198,7 +1293,7 @@ class PullStrategy @Inject constructor(
                             occurrenceGenerator.regenerateOccurrences(saved)
                         }
 
-                        saved to priorAttendees
+                        Triple(saved, priorAttendees, mapped.attendees)
                     }
                 }
             } catch (_: SQLiteConstraintException) {
@@ -1214,10 +1309,22 @@ class PullStrategy @Inject constructor(
                 Log.d(TAG, "Skipped already-synced master ${meta.parsed.uid} (${meta.caldavUrl})")
                 sessionBuilder?.incrementSkipAlreadySynced()
                 continue
+            } catch (e: CancellationException) {
+                throw e  // Never swallow coroutine cancellation
+            } catch (e: Exception) {
+                // Fault isolation: a single event whose map/upsert/occurrence
+                // generation throws must not abort the whole calendar's pull and
+                // strand every other event in the batch. Any transaction rolled
+                // back this event's partial write, so skip it and continue.
+                // Recovery (token hold vs. advance) is path-dependent — see
+                // recordProcessingFailure.
+                recordProcessingFailure(sessionBuilder, meta.caldavUrl, "event", e)
+                continue
             }
 
-            val savedEvent = savedPair.first
-            val priorAttendees = savedPair.second
+            val savedEvent = savedTriple.first
+            val priorAttendees = savedTriple.second
+            val newAttendees = savedTriple.third
 
             uidToMasterEvent[meta.parsed.uid] = savedEvent
             uidsWithRegeneratedMaster.add(meta.parsed.uid)
@@ -1243,7 +1350,7 @@ class PullStrategy @Inject constructor(
             cancelRemindersIfSelfDeclined(
                 eventId = savedEvent.id,
                 priorAttendees = priorAttendees,
-                newAttendees = mapped.attendees,
+                newAttendees = newAttendees,
                 account = accountForInvites
             )
 
@@ -1315,7 +1422,22 @@ class PullStrategy @Inject constructor(
                     recurrenceIdMs = recurrenceIdMs,
                     placeholderTitle = meta.parsed.summary?.ifBlank { null } ?: "Untitled",
                 )
-                val syntheticId = eventsDao.insert(synthetic)
+                // The synthetic insert runs before the map/upsert try below, so
+                // isolate it here: a DB-layer throw on this one placeholder must
+                // skip this exception, not abort the whole calendar's pull.
+                // withDbRetry mirrors the master (upsert) and exception (upsert)
+                // write paths so a transient "database is locked" retries rather
+                // than being caught and silently dropping the orphan — full-sync
+                // and etag paths advance the token unconditionally, so a dropped
+                // orphan would not be re-fetched until the server next changes it.
+                val syntheticId = try {
+                    withDbRetry { eventsDao.insert(synthetic) }
+                } catch (e: CancellationException) {
+                    throw e  // Never swallow coroutine cancellation
+                } catch (e: Exception) {
+                    recordProcessingFailure(sessionBuilder, meta.caldavUrl, "exception", e)
+                    continue
+                }
                 masterEvent = synthetic.copy(id = syntheticId)
                 uidToMasterEvent[meta.parsed.uid] = masterEvent
                 Log.i(
@@ -1410,63 +1532,84 @@ class PullStrategy @Inject constructor(
                 continue
             }
 
-            // Map ICalEvent to Event entity + Attendee rows using ICalEventMapper.
-            // Pass the master's DTSTART so the mapper normalizes a
-            // value-type-mismatched RECURRENCE-ID before writing
-            // originalInstanceTime — see ICalEventMapper.normalizeRecurrenceId.
-            // Uses the same resolver as the lookup above so the stored key and
-            // the queried key are always derived identically.
-            val mappedException = ICalEventMapper.toEntity(
-                icalEvent = meta.parsed,
-                rawIcal = meta.rawIcal,
-                calendarId = calendar.id,
-                caldavUrl = meta.caldavUrl,
-                etag = meta.etag,
-                masterDtStart = masterDtStartFor(meta.parsed.uid, masterEvent),
-            )
-            var event = mappedException.event
-
-            // Reject exception events with invalid timestamps (RFC 5545 violation)
-            if (!hasValidTimestamps(event)) {
-                Log.w(TAG, "Skipping exception ${meta.caldavUrl} - invalid timestamps: startTs=${event.startTs}, endTs=${event.endTs}")
-                sessionBuilder?.incrementSkipParseError()
-                sessionBuilder?.addWarning("Invalid timestamps in exception at ${filenameOf(meta.caldavUrl)} (endTs < startTs)")
-                continue
-            }
-
-            // Link to master event
-            event = event.copy(
-                originalEventId = masterEvent.id,
-                originalSyncId = meta.parsed.uid
-            )
-
-            // Preserve existing event ID and timestamps
-            if (existingException != null) {
-                event = event.copy(
-                    id = existingException.id,
-                    createdAt = existingException.createdAt,
-                    localModifiedAt = existingException.localModifiedAt,
-                    // Preserve existing etag when server omits <getetag> from response
-                    etag = meta.etag ?: existingException.etag,
-                    color = event.color ?: existingException.color
+            // Fault isolation covers the map->validate->upsert->link pipeline for
+            // this override, mirroring the master pass: the map step (toEntity)
+            // runs before the transaction and a parseable-but-hostile override
+            // event can make it throw a shape no fixture anticipated. Isolating
+            // only the transaction would still let a map-step throw abort the
+            // whole calendar's pull. The `continue`s inside are ordinary skip
+            // paths (invalid ts, race), not failures.
+            //
+            // Scope note: the RECURRENCE-ID resolution and etag-unchanged re-link
+            // above (resolveInstanceTime / the self-heal linkException) sit before
+            // this try and are not isolated — they operate on already-resolved
+            // values, not the untrusted map step, so a throw there is treated as a
+            // real error, same as before this change.
+            //
+            // NOTE: a synthetic master may have been inserted above (outside any
+            // transaction) to give this exception's FK a target. It is left in
+            // place on failure by design — it is an invisible CANCELLED, rrule-null
+            // placeholder that generates no occurrence of its own, is cached in
+            // uidToMasterEvent for sibling exceptions in this batch, and is mutated
+            // in place when the real master arrives. Deleting it here would orphan
+            // a sibling exception that already linked to it.
+            val savedExceptionTriple: Triple<Event, List<Attendee>, List<Attendee>> = try {
+                // Map ICalEvent to Event entity + Attendee rows using ICalEventMapper.
+                // Pass the master's DTSTART so the mapper normalizes a
+                // value-type-mismatched RECURRENCE-ID before writing
+                // originalInstanceTime — see ICalEventMapper.normalizeRecurrenceId.
+                // Uses the same resolver as the lookup above so the stored key and
+                // the queried key are always derived identically.
+                val mappedException = ICalEventMapper.toEntity(
+                    icalEvent = meta.parsed,
+                    rawIcal = meta.rawIcal,
+                    calendarId = calendar.id,
+                    caldavUrl = meta.caldavUrl,
+                    etag = meta.etag,
+                    masterDtStart = masterDtStartFor(meta.parsed.uid, masterEvent),
                 )
-            }
+                var event = mappedException.event
 
-            // RACE PREVENTION: Re-check sync status for exception events (same as master events above)
-            if (existingException != null) {
-                val freshStatus = eventsDao.getSyncStatus(existingException.id)
-                if (freshStatus != null && freshStatus != SyncStatus.SYNCED) {
-                    Log.d(TAG, "Race detected: exception ${meta.caldavUrl} gained pending changes ($freshStatus)")
-                    sessionBuilder?.incrementSkipPendingLocal()
+                // Reject exception events with invalid timestamps (RFC 5545 violation)
+                if (!hasValidTimestamps(event)) {
+                    Log.w(TAG, "Skipping exception ${meta.caldavUrl} - invalid timestamps: startTs=${event.startTs}, endTs=${event.endTs}")
+                    sessionBuilder?.incrementSkipParseError()
+                    sessionBuilder?.addWarning("Invalid timestamps in exception at ${filenameOf(meta.caldavUrl)} (endTs < startTs)")
                     continue
                 }
-            }
 
-            // TRANSACTION: Upsert exception, link to master's occurrence atomically
-            // Uses Model B (linked occurrence) consistently to prevent duplicates.
-            // linkException handles: delete Model A occurrence (if exists), update/create Model B.
-            // Wrapped in withDbRetry for resilience against database lock errors
-            val savedExceptionPair: Pair<Event, List<Attendee>> = try {
+                // Link to master event
+                event = event.copy(
+                    originalEventId = masterEvent.id,
+                    originalSyncId = meta.parsed.uid
+                )
+
+                // Preserve existing event ID and timestamps
+                if (existingException != null) {
+                    event = event.copy(
+                        id = existingException.id,
+                        createdAt = existingException.createdAt,
+                        localModifiedAt = existingException.localModifiedAt,
+                        // Preserve existing etag when server omits <getetag> from response
+                        etag = meta.etag ?: existingException.etag,
+                        color = event.color ?: existingException.color
+                    )
+                }
+
+                // RACE PREVENTION: Re-check sync status for exception events (same as master events above)
+                if (existingException != null) {
+                    val freshStatus = eventsDao.getSyncStatus(existingException.id)
+                    if (freshStatus != null && freshStatus != SyncStatus.SYNCED) {
+                        Log.d(TAG, "Race detected: exception ${meta.caldavUrl} gained pending changes ($freshStatus)")
+                        sessionBuilder?.incrementSkipPendingLocal()
+                        continue
+                    }
+                }
+
+                // TRANSACTION: Upsert exception, link to master's occurrence atomically
+                // Uses Model B (linked occurrence) consistently to prevent duplicates.
+                // linkException handles: delete Model A occurrence (if exists), update/create Model B.
+                // Wrapped in withDbRetry for resilience against database lock errors
                 withDbRetry {
                     database.runInTransaction {
                         val eventId = eventsDao.upsert(event)
@@ -1494,7 +1637,7 @@ class PullStrategy @Inject constructor(
                             occurrenceGenerator.regenerateOccurrences(saved)
                         }
 
-                        saved to priorAttendees
+                        Triple(saved, priorAttendees, mappedException.attendees)
                     }
                 }
             } catch (_: SQLiteConstraintException) {
@@ -1504,15 +1647,26 @@ class PullStrategy @Inject constructor(
                 sessionBuilder?.incrementSkipAlreadySynced()
                 sessionBuilder?.addWarning("Already-synced exception skipped at ${filenameOf(meta.caldavUrl)}")
                 continue
+            } catch (e: CancellationException) {
+                throw e  // Never swallow coroutine cancellation
+            } catch (e: Exception) {
+                // Fault isolation for the exception pass, mirroring the master
+                // pass above: one override event that throws during map/upsert/
+                // link must not abort the pull. Any transaction rolled back its
+                // partial write; skip and continue. Recovery is path-dependent —
+                // see recordProcessingFailure.
+                recordProcessingFailure(sessionBuilder, meta.caldavUrl, "exception", e)
+                continue
             }
 
-            val savedExceptionEvent = savedExceptionPair.first
-            val priorExceptionAttendees = savedExceptionPair.second
+            val savedExceptionEvent = savedExceptionTriple.first
+            val priorExceptionAttendees = savedExceptionTriple.second
+            val newExceptionAttendees = savedExceptionTriple.third
 
             cancelRemindersIfSelfDeclined(
                 eventId = savedExceptionEvent.id,
                 priorAttendees = priorExceptionAttendees,
-                newAttendees = mappedException.attendees,
+                newAttendees = newExceptionAttendees,
                 account = accountForInvites
             )
 

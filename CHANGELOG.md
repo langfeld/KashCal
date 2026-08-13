@@ -1,3 +1,43 @@
+## [2026.08.09]
+
+### Everything in this release
+
+- Fixed a deleted event not disappearing from KashCal after another client removed it on the server; when the server echoes the event's address with the `@` in its filename written as `%40`, the deletion is now matched and applied instead of silently skipped, #333
+- Changed pull-to-refresh to sync CardDAV contacts as well as calendar events, so a swipe-down picks up contacts added on the server right away instead of waiting for the next periodic sync
+- Fixed contact sync skipping past a contact it could not read and never coming back to it; a contact whose card failed to parse no longer gets stranded, and the next sync retries it
+
+## [2026.08.08]
+
+### Everything in this release
+
+- Fixed CardDAV contact sync bringing over almost no contacts and no photos once installed; every vCard was silently failing to parse on release builds, so an account that looked fine in testing landed a nearly empty address book on the phone, #10
+- Fixed real calendars and address books being hidden when their path or account name merely contained a word like inbox, outbox, or tasks; only genuine scheduling and task collections are skipped now
+- Added drilling into Day view by tapping a day-column header in Week or 3-Day view, with a back press returning to the exact week or span you came from, contributed by @Wqrld
+- Changed the Quick View buttons for Edit, Delete, Duplicate, and Share to icons so they no longer wrap in longer languages, contributed by @Wqrld
+- Shortened the all-day overflow badge in Week and 3-Day view to +N with a larger tap target, contributed by @Wqrld
+- Enlarged the week-view day-header letter and date number to match the 3-day header
+- Changed the delete-confirmation buttons to a single centered line and relabeled the editor's "Confirm Delete" to "Confirm" to match Quick View
+
+## [2026.08.07]
+
+Your calendar account has always known your contacts existed. Now it can bring them with it.
+
+Turn on the new Contacts switch for a CardDAV account and the contacts living on your server land on your phone: names, numbers, emails, photos, the phonetic spellings and job titles and custom labels you filed them under. They show up in your phone's own address book, next to everyone else, and they keep themselves current every time the account syncs.
+
+To switch it on, open the account from your settings and look under the calendar sync toggle for a Contacts row (it appears for accounts that carry contacts, like iCloud and Nextcloud). Flip it, grant the contacts permission when asked, and the first sync fills in the rest. Flip it back off and those contacts leave your phone as cleanly as they arrived.
+
+One direction only, for now. This first phase is a mirror: it reads your server and writes to your phone, never the reverse, so nothing you do on the device reaches back and rewrites the contacts on your account. Two-way editing is coming in a later release; read-only is the safe half to ship first, and the half worth having on day one.
+
+### Everything in this release
+
+- Added read-only contact sync for CardDAV accounts: a Contacts toggle in each account's settings (shown for contact-carrying providers) mirrors that account's server contacts onto your phone as a one-way, read-only sync for now, and removes them when you turn it off
+- Added contact detail to the mirror: names with phonetics and multiple values, phone numbers and emails with their custom labels, job title and role, categories, and contact photos fetched from the server
+- Added an app permissions screen, reached from your account, listing every permission KashCal uses with a direct link to each one's system settings
+- Fixed a pure-black or pure-white widget accent seed rendering as a muddy gray; it now paints a crisp black panel with white text, or white panel with black text, in both light and dark mode, while event colors and the dimming of past events stay intact
+- Fixed exported `.ics` files and share-card filenames dropping non-ASCII characters from the event title; accented and non-Latin names are kept
+- Fixed exported `.ics` files not escaping carriage returns and reminder text, so events with multi-line notes or alarms round-trip correctly per the calendar spec
+- Localized all of the above into every supported language
+
 ## [2026.08.03]
 
 Your widgets used to borrow the app's whole look whether you liked it or not. Now they have a say of their own.

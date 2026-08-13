@@ -23,6 +23,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Launch
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
@@ -57,6 +59,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -402,13 +405,19 @@ fun EventQuickViewSheet(
                         onClick = onDuplicate,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text(stringResource(R.string.action_duplicate))
+                        Icon(
+                            Icons.Default.ContentCopy,
+                            contentDescription = stringResource(R.string.action_duplicate)
+                        )
                     }
                     FilledTonalButton(
                         onClick = onShare,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text(stringResource(R.string.action_share))
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = stringResource(R.string.action_share)
+                        )
                     }
                 } else {
                     // Editable calendar: Edit, Delete, More menu.
@@ -423,8 +432,9 @@ fun EventQuickViewSheet(
                             onClick = onEdit,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(
-                                stringResource(
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = stringResource(
                                     if (canEditAsOrganizer) R.string.action_edit
                                     else R.string.action_open
                                 )
@@ -453,14 +463,22 @@ fun EventQuickViewSheet(
                                 contentColor = MaterialTheme.colorScheme.onErrorContainer
                             )
                         ) {
-                            Text(stringResource(R.string.action_delete))
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = stringResource(R.string.action_delete)
+                            )
                         }
                     } else {
                         FilledTonalButton(
                             onClick = { showDeleteConfirmation = false },
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(stringResource(R.string.action_cancel))
+                            Text(
+                                stringResource(R.string.action_cancel),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center
+                            )
                         }
                         FilledTonalButton(
                             onClick = {
@@ -473,7 +491,12 @@ fun EventQuickViewSheet(
                                 contentColor = MaterialTheme.colorScheme.onError
                             )
                         ) {
-                            Text(stringResource(R.string.action_confirm))
+                            Text(
+                                stringResource(R.string.action_confirm),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center
+                            )
                         }
                     }
 
