@@ -97,34 +97,34 @@ internal const val WEEK_NUMBER_GUTTER_WIDTH_DP = 18
 // ==================== Event-title rows (optional month day-cell style) ====================
 
 /**
- * Vertical space the month-widget header occupies, in dp — the nav-arrow / "+" boxes are
- * 48dp tall ([MonthWidgetHeader]). Subtracted from the widget height before distributing
- * the rest across the week rows when sizing event-title rows.
+ * Vertical space the month-widget header occupies, in dp. The nav-arrow / "+" boxes are
+ * 48dp touch targets, but the header's visual row is shorter; for sizing event-title rows
+ * we budget the visual row, not the touch target, so the grid doesn't under-fill.
  */
-internal const val MONTH_HEADER_HEIGHT_DP = 48
+internal const val MONTH_HEADER_HEIGHT_DP = 40
 
 /**
  * Vertical space the day-of-week letter row occupies, in dp: [WidgetTypography.monthDayNumber]
- * (16sp ≈ 21dp at font-scale 1.0) plus 2dp vertical padding on each side ([DayOfWeekRow]).
+ * (16sp ≈ 21dp at font-scale 1.0) plus the row's vertical padding.
  */
-internal const val MONTH_DOW_ROW_HEIGHT_DP = 25
+internal const val MONTH_DOW_ROW_HEIGHT_DP = 23
 
 /**
  * Vertical space the day-number block reserves at the top of a day cell, in dp — the 16sp
- * number plus the today marker's vertical padding, matching the dots layout's footprint.
+ * number plus the today marker's vertical padding.
  */
-internal const val DAY_NUMBER_BLOCK_HEIGHT_DP = 22
+internal const val DAY_NUMBER_BLOCK_HEIGHT_DP = 18
 
 /** Height of one all-day event chip in a day cell, in dp (11sp label + breathing room). */
-internal const val EVENT_CHIP_HEIGHT_DP = 14
+internal const val EVENT_CHIP_HEIGHT_DP = 13
 
 /**
- * Height of one timed-event title row in a day cell, in dp. Taller than a chip because the
- * 3dp color stripe uses IntrinsicSize.Min against the single-line title, so the row takes
- * the title's full line height — matching the in-app month view's slotHeight (labelSmall
- * line height, 16sp).
+ * Height of one event title row in a day cell, in dp. Sized to the chip, not to a timed
+ * row's theoretical line height: at 11sp the single-line title fits a 14dp slot, and the
+ * 3dp timed stripe centers within it. Budgeting 16dp here cost the standard-size widget
+ * its second title row (304dp height → 46dp cell → only one row), hiding "+n" markers.
  */
-internal const val TIMED_TITLE_ROW_HEIGHT_DP = 16
+internal const val TIMED_TITLE_ROW_HEIGHT_DP = 13
 
 /** Vertical gap between two event rows in a day cell, in dp. */
 internal const val EVENT_ROW_GAP_DP = 1
@@ -1001,13 +1001,14 @@ internal fun gridHorizontalPaddingDp(showWeekNumbers: Boolean): Int =
  * stacked row. Returns 0 when not even one row fits — the caller then falls back to dots.
  */
 internal fun maxEventRows(cellHeightDp: Float): Int {
-    var remaining = cellHeightDp - DAY_NUMBER_BLOCK_HEIGHT_DP
-    var rows = 0
-    while (rows < MAX_EVENT_ROWS && remaining >= TIMED_TITLE_ROW_HEIGHT_DP) {
-        rows++
-        remaining -= TIMED_TITLE_ROW_HEIGHT_DP + EVENT_ROW_GAP_DP
-    }
-    return rows
+    // A day cell holds the day-number block plus as many event rows as fit. Each row costs
+    // its height; rows after the first also pay the inter-row gap. The standard-size widget
+    // (304dp, 5 weeks → ~48dp cell) must reach 2 rows so a "+n" marker can share a cell
+    // with one visible title instead of going blank.
+    val usable = cellHeightDp - DAY_NUMBER_BLOCK_HEIGHT_DP
+    if (usable < TIMED_TITLE_ROW_HEIGHT_DP) return 0
+    val rows = 1 + ((usable - TIMED_TITLE_ROW_HEIGHT_DP) / (TIMED_TITLE_ROW_HEIGHT_DP + EVENT_ROW_GAP_DP)).toInt()
+    return rows.coerceAtMost(MAX_EVENT_ROWS)
 }
 
 /**

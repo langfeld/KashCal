@@ -129,16 +129,24 @@ internal fun computeMonthWidgetWeekRender(
             .sortedWith(compareBy<WidgetEvent> { eventOrderRank(it) }.thenBy { it.startTs })
 
         val freeSlots = (0 until maxSlots).filter { grid[it][col] === MonthWidgetSlot.Empty }
-        if (cellEvents.size <= freeSlots.size) {
-            for ((i, event) in cellEvents.withIndex()) {
-                grid[freeSlots[i]][col] = MonthWidgetSlot.CellEvent(event)
+        when {
+            cellEvents.size <= freeSlots.size -> {
+                for ((i, event) in cellEvents.withIndex()) {
+                    grid[freeSlots[i]][col] = MonthWidgetSlot.CellEvent(event)
+                }
             }
-        } else {
-            val visibleCount = (freeSlots.size - 1).coerceAtLeast(0)
-            for (i in 0 until visibleCount) {
-                grid[freeSlots[i]][col] = MonthWidgetSlot.CellEvent(cellEvents[i])
+            freeSlots.isEmpty() -> {
+                // Column fully bar-occupied: cell events drop silently (lanes-win policy).
             }
-            if (freeSlots.isNotEmpty()) {
+            else -> {
+                // More events than free slots: show what fits, collapse the rest into a
+                // "+n" marker in the LAST free slot — matching the in-app month view. With
+                // exactly one free slot the single visible event yields to the marker, so
+                // the day still reports its real count instead of going silently blank.
+                val visibleCount = (freeSlots.size - 1).coerceAtLeast(0)
+                for (i in 0 until visibleCount) {
+                    grid[freeSlots[i]][col] = MonthWidgetSlot.CellEvent(cellEvents[i])
+                }
                 // Lane-overflowed spans belong to this cell's hidden remainder too, but only
                 // in the cell where the span would have started — counting them everywhere
                 // would inflate every column of the week.
@@ -148,7 +156,6 @@ internal fun computeMonthWidgetWeekRender(
                 grid[freeSlots[freeSlots.size - 1]][col] =
                     MonthWidgetSlot.Overflow(cellEvents.size - visibleCount + hiddenSpansHere)
             }
-            // freeSlots empty: the column is fully bar-occupied; cell events drop silently.
         }
     }
 
