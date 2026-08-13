@@ -283,6 +283,7 @@ fun MonthWidgetContent(
                     weekRender = weekRender,
                     todayDayCode = todayDayCode,
                     monthEvents = monthEvents,
+                    cellWidthDp = cellWidthDp,
                     maxTitleChars = titleChars,
                     gutterLabel = if (showWeekNumbers) gutterLabels[weekIndex] else null,
                     forcedDark = forcedDark
@@ -330,6 +331,7 @@ private fun TitlesWeekRow(
     weekRender: MonthWidgetWeekRender,
     todayDayCode: Int,
     monthEvents: Map<Int, List<WidgetDataRepository.WidgetEvent>>,
+    cellWidthDp: Float,
     maxTitleChars: Int,
     gutterLabel: String?,
     forcedDark: Boolean?
@@ -360,6 +362,7 @@ private fun TitlesWeekRow(
                 SlotRow(
                     slotRow = slotRow,
                     weekDayCodes = weekDayCodes,
+                    cellWidthDp = cellWidthDp,
                     maxTitleChars = maxTitleChars
                 )
             }
@@ -440,11 +443,27 @@ private fun dayClickAction(dayCode: Int) = actionStartActivity<MainActivity>(
 private fun SlotRow(
     slotRow: List<MonthWidgetSlot>,
     weekDayCodes: List<Int>,
+    cellWidthDp: Float,
     maxTitleChars: Int
 ) {
     Row(modifier = GlanceModifier.fillMaxWidth().padding(top = EVENT_ROW_GAP_DP.dp)) {
         var col = 0
         while (col < 7) {
+            // The last item in the row stretches to fill whatever rounding the fixed cell
+            // widths left over, so the 7 columns always span the full grid width exactly.
+            val isLastItem = run {
+                var next = col + 1
+                if (slotRow[col] is MonthWidgetSlot.BarSegment) {
+                    val span = (slotRow[col] as MonthWidgetSlot.BarSegment).span
+                    while (next < 7 && (slotRow[next] as? MonthWidgetSlot.BarSegment)?.span == span) next++
+                }
+                next >= 7
+            }
+            val cellModifier = if (isLastItem) {
+                GlanceModifier.defaultWeight()
+            } else {
+                GlanceModifier.width(cellWidthDp.dp)
+            }
             when (val content = slotRow[col]) {
                 is MonthWidgetSlot.BarSegment -> {
                     // Merge the whole run of this span's segments into one bar.
@@ -454,23 +473,28 @@ private fun SlotRow(
                     ) {
                         endCol++
                     }
+                    val width = endCol - col + 1
                     SpanBar(
                         span = content.span,
-                        width = endCol - col + 1,
+                        width = width,
                         maxTitleChars = maxTitleChars,
                         dayCode = weekDayCodes[col],
-                        modifier = GlanceModifier.defaultWeight()
+                        // Fixed width, not defaultWeight(): Glance's defaultWeight() is always
+                        // weight(1f) — there is no weight(n) — so a weighted bar collapses to a
+                        // single column no matter how many days it spans. The widget knows the
+                        // real cell width from LocalSize, so the bar takes width × cellWidth.
+                        modifier = if (isLastItem) cellModifier else GlanceModifier.width((cellWidthDp * width).dp)
                     )
                     col = endCol + 1
                 }
                 is MonthWidgetSlot.CellEvent -> {
-                    Box(modifier = GlanceModifier.defaultWeight()) {
+                    Box(modifier = cellModifier) {
                         EventTitleRow(content.event, maxTitleChars)
                     }
                     col++
                 }
                 is MonthWidgetSlot.Overflow -> {
-                    Box(modifier = GlanceModifier.defaultWeight()) {
+                    Box(modifier = cellModifier) {
                         Text(
                             text = LocalContext.current.getString(R.string.status_more_events, content.count),
                             style = TextStyle(
@@ -486,8 +510,7 @@ private fun SlotRow(
                 MonthWidgetSlot.Empty -> {
                     // Transparent tap surface so empty parts of a day column still open the day.
                     Box(
-                        modifier = GlanceModifier
-                            .defaultWeight()
+                        modifier = cellModifier
                             .clickable(dayClickAction(weekDayCodes[col]))
                     ) {}
                     col++
