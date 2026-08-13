@@ -52,6 +52,7 @@ import org.onekash.kashcal.ui.components.SyncBannerState
 import org.onekash.kashcal.ui.components.weekview.WeekViewUtils
 import org.onekash.kashcal.ui.util.DayPagerUtils
 import org.robolectric.RobolectricTestRunner
+import java.time.LocalDate
 import java.util.Calendar as JavaCalendar
 
 /**
@@ -1520,6 +1521,8 @@ class HomeViewModelTest {
 
         // Sync should NOT have been requested
         verify(exactly = 0) { syncScheduler.requestImmediateSync(any(), any()) }
+        // Offline must not trigger contact sync either
+        verify(exactly = 0) { syncScheduler.requestImmediateContactSync() }
     }
 
     @Test
@@ -1541,6 +1544,52 @@ class HomeViewModelTest {
 
         // Sync should have been requested
         verify(exactly = 1) { syncScheduler.requestImmediateSync(any(), any()) }
+    }
+
+    @Test
+    fun `refreshSync when online also triggers CardDAV contact sync`() = runTest {
+        coEvery { accountRepository.getAllAccounts() } returns listOf(testICloudAccount)
+        coEvery { accountRepository.hasCredentials(testICloudAccount.id) } returns true
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        // Ensure online
+        networkStateFlow.value = true
+
+        // Clear any init-time sync calls
+        io.mockk.clearMocks(syncScheduler, answers = false, recordedCalls = true, childMocks = false)
+
+        viewModel.refreshSync()
+        advanceUntilIdle()
+
+        // Contact sync should also have been requested (sweep all contact-sync accounts)
+        verify { syncScheduler.requestImmediateContactSync() }
+    }
+
+    @Test
+    fun `syncOnResumeIfNeeded does not trigger contact sync`() = runTest {
+        coEvery { accountRepository.getAllAccounts() } returns listOf(testICloudAccount)
+        coEvery { accountRepository.hasCredentials(testICloudAccount.id) } returns true
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.isConfigured)
+
+        // Clear any init-time sync calls, then resume from background. App-open
+        // resume shares performSync() with pull-to-refresh but must NOT sweep
+        // contacts — only the explicit pull-to-refresh gesture does.
+        io.mockk.clearMocks(syncScheduler, answers = false, recordedCalls = true, childMocks = false)
+
+        viewModel.syncOnResumeIfNeeded()
+        advanceUntilIdle()
+
+        // The resume path did run (calendar sync fired) — it just must not
+        // sweep contacts. This guards against the exactly=0 passing because
+        // syncOnResumeIfNeeded early-returned instead.
+        verify { syncScheduler.requestImmediateSync(any(), any()) }
+        verify(exactly = 0) { syncScheduler.requestImmediateContactSync() }
     }
 
     // ==================== Pull-to-Refresh Not Configured / Offline Tests ====================
@@ -4436,6 +4485,35 @@ class HomeViewModelTest {
 
         assertEquals(ViewMode.INSIGHTS, viewModel.uiState.value.viewMode)
         coVerify(exactly = 0) { dataStore.setDefaultCalendarView("insights") }
+    }
+
+    @Test
+    fun `tapping a day header drills into Day view`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onWeekViewDayHeaderClick(LocalDate.now())
+        advanceUntilIdle()
+
+        assertEquals(ViewMode.DAY, viewModel.uiState.value.viewMode)
+    }
+
+    @Test
+    fun `tapping a day header switches to Day view without overwriting the startup default`() = runTest {
+        // Start in a non-DAY mode so the header tap is a real transition.
+        every { dataStore.defaultCalendarView } returns flowOf(KashCalDataStore.VIEW_WEEK)
+        coEvery { dataStore.getDefaultCalendarView() } returns KashCalDataStore.VIEW_WEEK
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onWeekViewDayHeaderClick(LocalDate.now())
+        advanceUntilIdle()
+
+        // A real transient switch: mode flips to DAY, but the persisted default
+        // must not change. Asserting both here so a regression that stops the
+        // switch entirely can't pass by simply never persisting.
+        assertEquals(ViewMode.DAY, viewModel.uiState.value.viewMode)
+        coVerify(exactly = 0) { dataStore.setDefaultCalendarView("day") }
     }
 
     @Test

@@ -261,40 +261,6 @@ class MonthWidgetContentTest {
         assertEquals(4, maxTitleChars(20f))
     }
 
-    // ==================== visibleTitleEvents ====================
-
-    @Test
-    fun `visibleTitleEvents shows all events when they fit the row budget`() {
-        val events = listOf(createWidgetEvent(), createWidgetEvent(), createWidgetEvent())
-        val (visible, overflow) = visibleTitleEvents(events, maxRows = 3)
-        assertEquals(3, visible.size)
-        assertEquals(0, overflow)
-    }
-
-    @Test
-    fun `visibleTitleEvents yields the last slot to the overflow label`() {
-        val events = List(5) { createWidgetEvent() }
-        val (visible, overflow) = visibleTitleEvents(events, maxRows = 3)
-        assertEquals(2, visible.size)
-        assertEquals(3, overflow)
-    }
-
-    @Test
-    fun `visibleTitleEvents with one row shows only the overflow count`() {
-        val events = listOf(createWidgetEvent(), createWidgetEvent())
-        val (visible, overflow) = visibleTitleEvents(events, maxRows = 1)
-        assertEquals(0, visible.size)
-        assertEquals(2, overflow)
-    }
-
-    @Test
-    fun `visibleTitleEvents with zero rows hides everything`() {
-        val events = listOf(createWidgetEvent())
-        val (visible, overflow) = visibleTitleEvents(events, maxRows = 0)
-        assertEquals(0, visible.size)
-        assertEquals(1, overflow)
-    }
-
     // ==================== ellipsizeTitle ====================
 
     @Test
