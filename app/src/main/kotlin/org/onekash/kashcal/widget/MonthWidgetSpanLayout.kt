@@ -68,23 +68,32 @@ internal fun computeMonthWidgetWeekRender(
     val weekStart = weekDayCodes.first()
     val weekEnd = weekDayCodes.last()
 
-    // 1. Collect the week's multi-day events, deduped across day buckets.
+    // 1. Collect the week's multi-day events, deduped across day buckets. Only this week's
+    //    own day buckets are scanned: the fetch range covers the whole month grid, and an
+    //    event that never touches this week but appears in an adjacent month's bucket would
+    //    otherwise be clamped into the week as a phantom flush bar (e.g. an event ending the
+    //    day before weekStart would render as a bar "between" two days and shove the week's
+    //    real content one lane down).
     val seen = LinkedHashMap<String, WidgetEvent>()
-    for ((_, events) in eventsByDay) {
-        for (e in events) {
+    for (dayCode in weekDayCodes) {
+        for (e in eventsByDay[dayCode].orEmpty()) {
             if (!e.isMultiDay) continue
-            if (e.endDay < weekStart || e.startDay > weekEnd) continue
             seen.putIfAbsent(e.spanKey, e)
         }
     }
 
-    val spans = seen.values.map { e ->
+    val spans = seen.values.mapNotNull { e ->
         val leftFlush = e.startDay < weekStart
         val rightFlush = e.endDay > weekEnd
-        MonthWidgetSpan(
+        val startCol = if (leftFlush) 0 else weekDayCodes.indexOf(e.startDay)
+        val endCol = if (rightFlush) 6 else weekDayCodes.indexOf(e.endDay)
+        // Defensive: a span whose clamped columns don't intersect this week (indexOf -1)
+        // must not render — it would draw across the whole row from the wrong anchor.
+        if (startCol < 0 || endCol < 0 || startCol > endCol) null
+        else MonthWidgetSpan(
             event = e,
-            startCol = if (leftFlush) 0 else weekDayCodes.indexOf(e.startDay),
-            endCol = if (rightFlush) 6 else weekDayCodes.indexOf(e.endDay),
+            startCol = startCol,
+            endCol = endCol,
             leftFlush = leftFlush,
             rightFlush = rightFlush,
         )

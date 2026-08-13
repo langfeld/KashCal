@@ -159,6 +159,61 @@ class MonthWidgetSpanLayoutTest {
         assertTrue(render.slots.all { row -> row.all { it is MonthWidgetSlot.BarSegment } })
     }
 
+    // ==================== Cross-month spans ====================
+
+    @Test
+    fun `span ending the day before this week renders no bar`() {
+        // Event 2026-07-31 .. 2026-08-02 ends the day BEFORE this week's Monday (08-03).
+        // The grid fetch range starts at the grid's first cell (here 07-27), so the event
+        // IS present in the month data — it must not leak into this week as a flush bar
+        // "between" Friday and Saturday that shoves the week's real content one lane down.
+        val span = multiDay(startDay = 20260731, endDay = 20260802)
+        val events = mapOf(20260731 to listOf(span), 20260801 to listOf(span), 20260802 to listOf(span))
+        val render = computeMonthWidgetWeekRender(week, events, maxSlots = 3)
+        assertTrue(render.slots.all { row -> row.none { it is MonthWidgetSlot.BarSegment } })
+    }
+
+    @Test
+    fun `span starting the day after this week renders no bar`() {
+        // Event 2026-08-10 .. 2026-08-12 starts the day AFTER this week's Sunday (08-09).
+        val span = multiDay(startDay = 20260810, endDay = 20260812)
+        val events = mapOf(20260810 to listOf(span), 20260811 to listOf(span), 20260812 to listOf(span))
+        val render = computeMonthWidgetWeekRender(week, events, maxSlots = 3)
+        assertTrue(render.slots.all { row -> row.none { it is MonthWidgetSlot.BarSegment } })
+    }
+
+    @Test
+    fun `span from the previous month ending inside this week renders with a flush left edge only`() {
+        // Event 2026-07-31 .. 2026-08-04: starts before the week, ends on Tuesday (col 1).
+        val span = multiDay(startDay = 20260731, endDay = 20260804)
+        val events = mapOf(week[0] to listOf(span), week[1] to listOf(span))
+        val render = computeMonthWidgetWeekRender(week, events, maxSlots = 3)
+        val row = render.slots[0]
+        val first = row[0] as MonthWidgetSlot.BarSegment
+        val second = row[1] as MonthWidgetSlot.BarSegment
+        assertTrue(first.span.leftFlush)
+        assertTrue(!second.span.rightFlush)
+        assertEquals(0, first.span.startCol)
+        assertEquals(1, second.span.endCol)
+        assertEquals(MonthWidgetSlot.Empty, row[2])
+    }
+
+    @Test
+    fun `span starting this week and ending next month renders with a flush right edge only`() {
+        // Event 2026-08-08 .. 2026-08-11: starts Saturday (col 5), runs past week end.
+        val span = multiDay(startDay = 20260808, endDay = 20260811)
+        val events = mapOf(week[5] to listOf(span), week[6] to listOf(span))
+        val render = computeMonthWidgetWeekRender(week, events, maxSlots = 3)
+        val row = render.slots[0]
+        assertEquals(MonthWidgetSlot.Empty, row[4])
+        val fifth = row[5] as MonthWidgetSlot.BarSegment
+        val sixth = row[6] as MonthWidgetSlot.BarSegment
+        assertTrue(!fifth.span.leftFlush)
+        assertTrue(sixth.span.rightFlush)
+        assertEquals(5, fifth.span.startCol)
+        assertEquals(6, sixth.span.endCol)
+    }
+
     // ==================== Sorting ====================
 
     @Test
