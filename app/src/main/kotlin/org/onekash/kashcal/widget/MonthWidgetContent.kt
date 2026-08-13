@@ -269,6 +269,9 @@ fun MonthWidgetContent(
                 val weekDayCodes = week.map { MonthGrid.computeDayCodeForCell(it, targetYear, targetMonth0) }
                 val weekRender = computeMonthWidgetWeekRender(weekDayCodes, monthEvents, eventRowCount)
                 TitlesWeekRow(
+                    // The weight comes from the caller: defaultWeight() only resolves inside
+                    // the parent Column's scope, not at this function's own top level.
+                    modifier = GlanceModifier.fillMaxWidth().defaultWeight(),
                     week = week,
                     weekDayCodes = weekDayCodes,
                     weekRender = weekRender,
@@ -315,6 +318,7 @@ fun MonthWidgetContent(
  */
 @Composable
 private fun TitlesWeekRow(
+    modifier: GlanceModifier,
     week: List<MonthGrid.DayCell>,
     weekDayCodes: List<Int>,
     weekRender: MonthWidgetWeekRender,
@@ -324,7 +328,7 @@ private fun TitlesWeekRow(
     gutterLabel: String?,
     forcedDark: Boolean?
 ) {
-    Row(modifier = GlanceModifier.fillMaxWidth().defaultWeight()) {
+    Row(modifier = modifier) {
         if (gutterLabel != null) {
             WeekNumberGutterCell(gutterLabel)
         }
