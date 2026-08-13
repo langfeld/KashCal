@@ -228,19 +228,19 @@ class MonthWidgetContentTest {
 
     @Test
     fun `maxEventRows returns 0 when not even one row fits below the day number`() {
-        // 22 (number) + 16 (one timed row) = 38dp minimum
-        assertEquals(0, maxEventRows(37f))
+        // 18 (number) + 13 (one row) = 31dp minimum
+        assertEquals(0, maxEventRows(30f))
     }
 
     @Test
     fun `maxEventRows fits exactly one row at the minimum height`() {
-        assertEquals(1, maxEventRows(38f))
+        assertEquals(1, maxEventRows(31f))
     }
 
     @Test
-    fun `maxEventRows fits two rows with gap`() {
-        // 22 + 16 + 1 + 16 = 55dp
-        assertEquals(2, maxEventRows(55f))
+    fun `maxEventRows fits two rows at the standard widget cell height`() {
+        // Standard widget: 304dp tall, 5 weeks -> ~48dp cell. 18 + 13 + 1 + 13 = 45dp.
+        assertEquals(2, maxEventRows(48.2f))
     }
 
     @Test
