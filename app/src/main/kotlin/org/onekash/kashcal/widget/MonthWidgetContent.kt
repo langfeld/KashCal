@@ -267,6 +267,12 @@ fun MonthWidgetContent(
                 // Titles mode: week slot layout — multi-day events span their columns as
                 // continuous bars, single-day events fill the remaining per-cell slots.
                 val weekDayCodes = week.map { MonthGrid.computeDayCodeForCell(it, targetYear, targetMonth0) }
+                // Sanity: a week row is always 7 strictly-increasing day codes. If that
+                // ever breaks (grid/cell mismatch), fall back to dots rather than render
+                // bars anchored on wrong columns.
+                check(weekDayCodes.size == 7 && weekDayCodes.zipWithNext().all { (a, b) -> b > a }) {
+                    "week day codes not strictly increasing: $weekDayCodes"
+                }
                 val weekRender = computeMonthWidgetWeekRender(weekDayCodes, monthEvents, eventRowCount)
                 TitlesWeekRow(
                     // The weight comes from the caller: defaultWeight() only resolves inside
