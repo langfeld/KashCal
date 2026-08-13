@@ -70,10 +70,7 @@ internal fun computeMonthWidgetWeekRender(
 
     // 1. Collect the week's multi-day events, deduped across day buckets. Only this week's
     //    own day buckets are scanned: the fetch range covers the whole month grid, and an
-    //    event that never touches this week but appears in an adjacent month's bucket would
-    //    otherwise be clamped into the week as a phantom flush bar (e.g. an event ending the
-    //    day before weekStart would render as a bar "between" two days and shove the week's
-    //    real content one lane down).
+    //    event that never touches this week must never leak into the row as a flush bar.
     val seen = LinkedHashMap<String, WidgetEvent>()
     for (dayCode in weekDayCodes) {
         for (e in eventsByDay[dayCode].orEmpty()) {
@@ -82,15 +79,19 @@ internal fun computeMonthWidgetWeekRender(
         }
     }
 
+    // 2. Clamp every span to the week. The guards make the columns total: an event that
+    //    overlaps the week always lands on a valid [0..6] range — startCol/endCol are
+    //    derived from the same clamped dates, so they can never disagree with the guard.
     val spans = seen.values.mapNotNull { e ->
+        if (e.endDay < weekStart || e.startDay > weekEnd) return@mapNotNull null
         val leftFlush = e.startDay < weekStart
         val rightFlush = e.endDay > weekEnd
         val startCol = if (leftFlush) 0 else weekDayCodes.indexOf(e.startDay)
         val endCol = if (rightFlush) 6 else weekDayCodes.indexOf(e.endDay)
-        // Defensive: a span whose clamped columns don't intersect this week (indexOf -1)
-        // must not render — it would draw across the whole row from the wrong anchor.
-        if (startCol < 0 || endCol < 0 || startCol > endCol) null
-        else MonthWidgetSpan(
+        // With the overlap guard above, indexOf can only miss when the week list itself is
+        // inconsistent — drop rather than draw a bar from a bogus anchor.
+        if (startCol < 0 || endCol < 0 || startCol > endCol) return@mapNotNull null
+        MonthWidgetSpan(
             event = e,
             startCol = startCol,
             endCol = endCol,
