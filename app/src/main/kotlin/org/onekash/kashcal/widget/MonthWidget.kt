@@ -22,10 +22,12 @@ import org.onekash.kashcal.ui.model.MonthGrid
 import java.time.YearMonth
 
 /**
- * Month View widget showing a full month calendar grid with event indicator dots.
+ * Month View widget showing a full month calendar grid.
  *
  * Features:
- * - 6x7 calendar grid with day numbers and event indicator dots
+ * - 6x7 calendar grid with day numbers; events show as colored indicator dots by default,
+ *   or as event title rows when the "month widget event titles" setting is on — then with
+ *   continuous bars for multi-day events, mirroring the in-app month view
  * - Today highlighted with accent color
  * - Past days dimmed
  * - Tap day → navigate to that day in app
