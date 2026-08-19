@@ -150,7 +150,14 @@ fun AccountDetailSheet(
                         label = stringResource(R.string.account_detail_sync_contacts),
                         subtitle = stringResource(R.string.account_detail_sync_contacts_subtitle),
                         checked = account.contactSyncEnabled,
-                        onCheckedChange = { onToggleContactSync(it) }
+                        onCheckedChange = { onToggleContactSync(it) },
+                        // Contact sync is still stabilizing; flag it inline.
+                        badge = { BetaBadge() },
+                        // Trailing ⓘ: what it does + the read-only limitation.
+                        info = SettingsRowInfo(
+                            title = stringResource(R.string.account_detail_sync_contacts),
+                            text = stringResource(R.string.account_detail_sync_contacts_info_text)
+                        )
                     )
 
                     // Inline re-grant affordance (not a blocking dialog) shown when

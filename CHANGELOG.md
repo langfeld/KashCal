@@ -1,3 +1,44 @@
+## [2026.08.19]
+
+### Everything in this release
+
+- Fixed subscribed calendar feeds that showed events in the preview but none after refreshing, when the feed defined its own time zone under a non-standard name; the real zone is now taken from the feed's `X-LIC-LOCATION` hint and any that still cannot be resolved fall back to a floating time instead of dropping every event, #346
+- Changed the month home-screen widget to show event titles at its normal placed size and across more sizes, instead of only when stretched much larger, so a freshly placed widget shows titles and only the smallest sizes fall back to dots
+- Improved month-widget titles to fill each day cell's width without a trailing ellipsis, with a day-of-month number sized to match the in-app month view, so more of each title is readable
+- Changed the month widget's minimum resize size so it can be shrunk smaller on the home screen
+
+## [2026.08.17]
+
+A colored dot can tell you that a day is busy. It can't tell you with what. The month widget now can.
+
+Give the widget a little height and its day cells stop hinting and start naming: a timed event shows as a color stripe with its title, an all-day event as a filled chip, reading the way the month view inside the app already does. There is no switch to hunt for. The widget measures the room you have given it and decides for itself, dots when it is slim, titles the moment a title will actually fit, so a narrow strip stays clean and a tall square earns its space.
+
+The idea came from the community, contributed by langfeld; the version shipping here grew a sense of its own size, so it needs no setting at all.
+
+Drag a corner and watch it change its mind.
+
+### Everything in this release
+
+- Added event titles to the month home-screen widget: day cells can show a timed event as a color stripe with its title and an all-day event as a filled chip, mirroring the in-app month view, and the widget switches between dots and titles on its own based on how tall you size it, with no setting to manage, contributed by langfeld in #336
+- Added tapping the `+n` overflow marker in a month-widget day cell to open that day
+- Added pull-to-refresh to the full-height Month view
+- Fixed calendar invitations not being emailed for events created on servers such as Nextcloud; the organizer was written as an internal server path instead of an email address, so the server rejected it as an invalid calendar user and sent nothing, #340
+- Fixed the current-time line jumping away from the real time when you pinch-zoom the week grid, #339
+- Fixed the quick-view sheet still showing an event's old title and details right after you edited it, #338
+- Fixed calendar views not updating immediately after you add, edit, or delete an event on a device calendar from inside KashCal
+- Changed the current-time indicator to size itself in density-independent units so it looks consistent across screen densities
+- Added an info tooltip to the Contacts sync toggle in each account's settings, explaining what read-only contact sync does
+- Localized the ICS subscription sync-interval labels and the default subscribed-calendar name, so both appear in your language
+
+## [2026.08.14]
+
+### Everything in this release
+
+- Fixed CardDAV contacts failing to sync on accounts whose server hands back a broken auto-discovery response, such as a server running behind a reverse proxy on a non-standard port, or one that rejects the discovery probe outright; contact sync now reuses the connection details the account already worked out when you set up its calendar, so contacts come through on servers where before only the calendars synced
+- Fixed a rare case where all of an account's synced contacts could be wiped from the phone when contact discovery momentarily returned no address books; an empty discovery is now treated as no signal rather than a reason to remove contacts already synced
+- Added a Beta badge to the Contacts toggle in each account's settings, marking read-only contact sync as still stabilizing
+- Improved the change-password field so it uses a password keyboard and lets your credential manager offer to fill and save the new password, matching the sign-in fields
+
 ## [2026.08.09]
 
 ### Everything in this release
